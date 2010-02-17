@@ -1,0 +1,211 @@
+#!/usr/bin/env python
+
+# Copyright (c) 2010 Peter Teichman
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+import BeautifulSoup
+import cgi
+import gzip
+import HTMLParser
+import re
+import optparse
+import os
+import mailbox
+import StringIO
+import sys
+import tempfile
+import urllib2
+
+def get_parser():
+    parser = optparse.OptionParser(usage="usage: %prog [options] <archive url>")
+    parser.add_option("-c", "--count", default=25, type="int",
+                      help="number of messages to convert to rss")
+    return parser
+
+def usage(parser):
+    parser.print_help()
+    sys.exit(1)
+
+def fetch(url):
+    fd = urllib2.urlopen(url)
+
+    try:
+        return fd.read()
+    finally:
+        fd.close()
+
+class MailmanArchive:
+    def __init__(self, archive_url):
+        # normalize the archive url to make sure it ends with a slash
+        if archive_url[-1] != "/":
+            archive_url = archive_url + "/"
+
+        self.archive_url = archive_url
+        archive = fetch(archive_url)
+
+        self._soup = BeautifulSoup.BeautifulSoup(archive)
+
+    def get_title(self):
+        return self._soup.html.head.title.string
+
+    def get_month(self, url):
+        data_gz = fetch(url)
+
+        (fd, tmpfile) = tempfile.mkstemp()
+
+        fd = os.fdopen(fd, "w+b")
+        data = gzip.GzipFile(fileobj=StringIO.StringIO(data_gz)).read()
+        fd.write(data)
+        fd.close()
+
+        mbox = mailbox.mbox(tmpfile)
+        os.remove(tmpfile)
+
+        return mbox
+
+    def get_month_archives(self):
+        ret = []
+
+        months = self._soup.findAll("a", href=re.compile(".*txt(.gz)?"))
+        for month in months:
+            url = month.get("href")
+
+            if not url.endswith(".gz"):
+                url = url + ".gz"
+
+            url = self.archive_url + url
+            ret.append(url)
+
+        return ret
+
+def get_part_field(part, name):
+    io = StringIO.StringIO(part)
+
+    for line in io.readlines():
+        if line.lower().startswith(name):
+            parts = line.split(":", 1)
+            return parts[1].strip()
+
+def print_rss(archive, mails):
+    print '<rss version="2.0">'
+    print '<channel>'
+
+    title = archive.get_title()
+    if title:
+        print '<title>%s</title>' % cgi.escape(title)
+        print '<description>%s</description>' % cgi.escape(title)
+
+    link = archive.archive_url
+    print '<link>%s</link>' % cgi.escape(link)
+
+    for mail in mails:
+        print '<item>'
+        
+        author = mail.get("from")
+        if author:
+            author = author.replace(" at ", "@")
+                             
+            print '<author>%s</author>' % cgi.escape(author)
+
+        subject = mail.get("subject")
+        if subject:
+            print '<title>%s</title>' % cgi.escape(subject)
+
+        date = mail.get("date")
+        if date:
+            print '<pubDate>%s</pubDate>' % cgi.escape(date)
+
+        guid = mail.get("message-id")
+        if guid:
+            guid = archive.archive_url + guid.strip("<>")
+
+            print '<guid isPermaLink="false">%s</guid>' % cgi.escape(guid)
+
+        if mail.is_multipart():
+            body = mail.get_payload(0)
+        else:
+            body = mail.get_payload()
+
+        parts = re.split(re.compile("^-+\s+next part\s+-+$", re.MULTILINE),
+                         body)
+
+        parts = [ part.strip() for part in parts ]
+
+        body = parts[0].replace("\n", "<br/>")
+
+        print '<description><![CDATA[%s]]></description>' % body
+
+        for part in parts[1:]:
+            # include enclosures
+            if not "A non-text attachment was scrubbed" in part:
+                continue
+
+            mime_type = get_part_field(part, "type")
+            size = get_part_field(part, "size")
+            url = get_part_field(part, "url")
+
+            if mime_type and size and url:
+                print '<enclosure url="%s" length="%s" type="%s" />' % \
+                    (url, size, mime_type)
+
+        print '</item>'
+
+    print '</channel>'
+    print '</rss>'
+
+def main():
+    parser = get_parser()
+    (options, args) = parser.parse_args()
+
+    if len(args) != 1:
+        usage(parser)
+
+    archive = MailmanArchive(args[0])
+    months = archive.get_month_archives()
+    
+    if len(months) == 0:
+        print "ERROR: Could not find month archives in url"
+        sys.exit(1)
+
+    mails = []
+
+    for month_url in months:
+        mbox = archive.get_month(month_url)
+
+        month = list(mbox)
+        month.reverse()
+
+        for mail in month:
+            mails.append(mail)
+
+        if len(mails) >= options.count:
+            break
+
+    # trim to COUNT entries
+    if len(mails) > options.count:
+        mails = mails[:options.count]
+
+    print_rss(archive, mails)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
