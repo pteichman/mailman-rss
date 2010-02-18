@@ -23,7 +23,6 @@
 import BeautifulSoup
 import cgi
 import gzip
-import HTMLParser
 import re
 import optparse
 import os
