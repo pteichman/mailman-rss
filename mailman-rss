@@ -32,6 +32,8 @@ import sys
 import tempfile
 import urllib2
 
+from urlparse import urlparse
+
 def get_parser():
     parser = optparse.OptionParser(usage="usage: %prog [options] <archive url>")
     parser.add_option("-c", "--count", default=25, type="int",
@@ -161,8 +163,10 @@ def print_rss(archive, mails):
             url = get_part_field(part, "url")
 
             if mime_type and size and url:
-                print '<enclosure url="%s" length="%s" type="%s" />' % \
-                    (url, size, mime_type)
+                o = urlparse(url)
+                if o.netloc:
+                    print '<enclosure url="%s" length="%s" type="%s" />' % \
+                        (url, size, mime_type)
 
         print '</item>'
 
