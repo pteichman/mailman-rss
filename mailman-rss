@@ -45,12 +45,7 @@ def usage(parser):
     sys.exit(1)
 
 def fetch(url):
-    fd = urllib2.urlopen(url)
-
-    try:
-        return fd.read()
-    finally:
-        fd.close()
+    return urllib2.urlopen(url)
 
 class MailmanArchive:
     def __init__(self, archive_url):
@@ -61,18 +56,21 @@ class MailmanArchive:
         self.archive_url = archive_url
         archive = fetch(archive_url)
 
-        self._soup = BeautifulSoup.BeautifulSoup(archive)
+        self._soup = BeautifulSoup.BeautifulSoup(archive.read())
 
     def get_title(self):
         return self._soup.html.head.title.string
 
     def get_month(self, url):
-        data_gz = fetch(url)
+        f = fetch(url)
 
         (fd, tmpfile) = tempfile.mkstemp()
 
         fd = os.fdopen(fd, "w+b")
-        data = gzip.GzipFile(fileobj=StringIO.StringIO(data_gz)).read()
+        if f.info().get('Content-Encoding') == 'gzip':
+            data = gzip.GzipFile(fileobj=StringIO.StringIO(data_gz)).read()
+        else:
+            data = f.read()
         fd.write(data)
         fd.close()
 
@@ -87,10 +85,6 @@ class MailmanArchive:
         months = self._soup.findAll("a", href=re.compile(".*txt(.gz)?"))
         for month in months:
             url = month.get("href")
-
-            if not url.endswith(".gz"):
-                url = url + ".gz"
-
             url = self.archive_url + url
             ret.append(url)
 
